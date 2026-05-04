@@ -6,11 +6,14 @@ export async function sendTripEmail(pairs: TripPair[]): Promise<void> {
   if (pairs.length === 0) return;
 
   const apiKey = process.env.RESEND_API_KEY;
-  const to = process.env.RESEND_TO_EMAIL;
+  const to = (process.env.RESEND_TO_EMAIL ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
   const from =
     process.env.RESEND_FROM_EMAIL || 'SAS Watcher <onboarding@resend.dev>';
   if (!apiKey) throw new Error('RESEND_API_KEY missing');
-  if (!to) throw new Error('RESEND_TO_EMAIL missing');
+  if (to.length === 0) throw new Error('RESEND_TO_EMAIL missing');
 
   const resend = new Resend(apiKey);
 
