@@ -12,6 +12,22 @@ export function pairKey(p: { outDate: string; retDate: string }): string {
   return `${p.outDate}-${p.retDate}`;
 }
 
+export type LegDirection = 'outbound' | 'inbound';
+
+export function singleLegKey(direction: LegDirection, date: string): string {
+  return `${direction}:${date}`;
+}
+
+export function findValidSingleLegs(
+  calendar: CalendarMap,
+  opts: { maxPoints: number },
+): string[] {
+  return Object.entries(calendar)
+    .filter(([, day]) => day.isStandardAward && day.totalPrice <= opts.maxPoints)
+    .map(([date]) => date)
+    .sort();
+}
+
 export function findValidPairs(
   outbound: CalendarMap,
   inbound: CalendarMap,

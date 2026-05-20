@@ -11,13 +11,23 @@ import {
   MAX_STAY_DAYS,
   WATCH_MONTHS,
 } from './config';
-import { findValidPairs, pairKey, type TripPair } from './trip';
-import { sendTripEmail } from './notify';
+import {
+  findValidPairs,
+  findValidSingleLegs,
+  pairKey,
+  singleLegKey,
+  type LegDirection,
+  type TripPair,
+} from './trip';
+import { sendTripEmail, sendSingleLegEmail, type SingleLegAlert } from './notify';
 import {
   setDirectionalSnapshot,
   getAlertedPairs,
   addAlertedPairs,
   removeAlertedPairs,
+  getAlertedSingleLegs,
+  addAlertedSingleLegs,
+  removeAlertedSingleLegs,
   appendAlerts,
   setMeta,
 } from './storage';
@@ -30,6 +40,8 @@ export type CheckResult = {
   validPairs: number;
   newAlerts: TripPair[];
   rearmed: string[];
+  newSingleLegs: SingleLegAlert[];
+  rearmedSingleLegs: string[];
   durationMs: number;
 };
 
@@ -77,6 +89,37 @@ export async function runCheck(fetcher: Fetcher): Promise<CheckResult> {
     await removeAlertedPairs(rearmKeys);
   }
 
+  const outSingles = findValidSingleLegs(mergedOut, { maxPoints: MAX_POINTS });
+  const inSingles = findValidSingleLegs(mergedIn, { maxPoints: MAX_POINTS });
+  const currentSingleKeys = new Set<string>([
+    ...outSingles.map((d) => singleLegKey('outbound', d)),
+    ...inSingles.map((d) => singleLegKey('inbound', d)),
+  ]);
+  const previouslyAlertedSingles = await getAlertedSingleLegs();
+  const newSingleKeys = [...currentSingleKeys].filter(
+    (k) => !previouslyAlertedSingles.has(k),
+  );
+  const rearmSingleKeys = [...previouslyAlertedSingles].filter(
+    (k) => !currentSingleKeys.has(k),
+  );
+
+  const newSingleLegs: SingleLegAlert[] = newSingleKeys.map((k) => {
+    const sep = k.indexOf(':');
+    const direction = k.slice(0, sep) as LegDirection;
+    const date = k.slice(sep + 1);
+    const price =
+      (direction === 'outbound' ? mergedOut : mergedIn)[date].totalPrice;
+    return { direction, date, price };
+  });
+
+  if (newSingleLegs.length > 0) {
+    await sendSingleLegEmail(newSingleLegs);
+    await addAlertedSingleLegs(newSingleKeys);
+  }
+  if (rearmSingleKeys.length > 0) {
+    await removeAlertedSingleLegs(rearmSingleKeys);
+  }
+
   await setDirectionalSnapshot(merged);
   await setMeta({
     lastCheckedAt: new Date().toISOString(),
@@ -91,6 +134,8 @@ export async function runCheck(fetcher: Fetcher): Promise<CheckResult> {
     validPairs: pairs.length,
     newAlerts: newPairs,
     rearmed: rearmKeys,
+    newSingleLegs,
+    rearmedSingleLegs: rearmSingleKeys,
     durationMs: Date.now() - start,
   };
 }

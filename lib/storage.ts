@@ -7,6 +7,7 @@ const redis = Redis.fromEnv();
 const SNAPSHOT_OUT_KEY = `snapshot:${ROUTE_KEY}:outbound`;
 const SNAPSHOT_IN_KEY = `snapshot:${ROUTE_KEY}:inbound`;
 const ALERTED_PAIRS_KEY = `alerted:pairs:${ROUTE_KEY}`;
+const ALERTED_SINGLES_KEY = `alerted:singles:${ROUTE_KEY}`;
 const ALERTS_KEY = `alerts:${ROUTE_KEY}`;
 const META_KEY = `meta:${ROUTE_KEY}`;
 
@@ -57,6 +58,21 @@ export async function addAlertedPairs(keys: string[]): Promise<void> {
 export async function removeAlertedPairs(keys: string[]): Promise<void> {
   if (keys.length === 0) return;
   await redis.srem(ALERTED_PAIRS_KEY, ...(keys as [string, ...string[]]));
+}
+
+export async function getAlertedSingleLegs(): Promise<Set<string>> {
+  const arr = (await redis.smembers(ALERTED_SINGLES_KEY)) ?? [];
+  return new Set(arr.map((v) => String(v)));
+}
+
+export async function addAlertedSingleLegs(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  await redis.sadd(ALERTED_SINGLES_KEY, ...(keys as [string, ...string[]]));
+}
+
+export async function removeAlertedSingleLegs(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  await redis.srem(ALERTED_SINGLES_KEY, ...(keys as [string, ...string[]]));
 }
 
 export async function appendAlerts(items: Alert[]): Promise<void> {
