@@ -50,5 +50,10 @@ jobs:
         if: steps.pw-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
 
+      # Chromium now runs headful (clears Cloudflare far more reliably), which
+      # needs an X server on the Linux runner.
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
       - name: Run check
-        run: npm run check
+        run: xvfb-run -a npm run check

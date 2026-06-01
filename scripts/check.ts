@@ -65,14 +65,20 @@ async function makeFetcher(): Promise<{
   fetcher: Fetcher;
   close: () => Promise<void>;
 }> {
+  // Headful (run under xvfb in CI). Headless Chromium is a primary Cloudflare
+  // signal; a real headful Chrome clears managed challenges far more often.
   const browser: Browser = await chromium.launch({
-    headless: true,
+    headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
   });
   const context = await browser.newContext({
     userAgent: UA,
     locale: 'en-GB',
     viewport: { width: 1280, height: 800 },
+  });
+  // Cheap automation tell: navigator.webdriver === true under automation.
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
   const page: Page = await context.newPage();
 
@@ -84,12 +90,42 @@ async function makeFetcher(): Promise<{
   const overallDeadline = Date.now() + 180_000;
   const MAX_ATTEMPTS = 4;
 
-  const doFetch = (url: string): Promise<FetchResult> =>
-    page.evaluate(async (u: string) => {
-      const r = await fetch(u, { credentials: 'include' });
-      const body = await r.text();
-      return { ok: r.ok, status: r.status, body };
-    }, url);
+  // Navigate to the API URL instead of fetch()ing it. The SAS endpoint returns
+  // application/json, which Chromium renders as text we read back. Crucially, a
+  // real navigation lets the browser execute and clear a Cloudflare challenge —
+  // an in-page fetch() only ever receives the challenge HTML and can never
+  // solve it. When the interstitial is showing, poll until it auto-solves into
+  // the JSON or we hit the deadline.
+  const CHALLENGE_WAIT_MS = 30_000;
+  const readBody = (): Promise<string> =>
+    page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
+
+  const doFetch = async (url: string): Promise<FetchResult> => {
+    let resp;
+    try {
+      resp = await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 35_000,
+      });
+    } catch {
+      return { ok: false, status: 0, body: '' };
+    }
+    const status = resp?.status() ?? 0;
+    let body = await readBody();
+    if (!looksLikeJson(body)) {
+      const deadline = Date.now() + CHALLENGE_WAIT_MS;
+      while (Date.now() < deadline) {
+        await page.waitForTimeout(500);
+        body = await readBody();
+        if (looksLikeJson(body)) break;
+        // A settled, non-empty page that isn't a challenge is a real response
+        // (e.g. a SAS error) — stop waiting and let it propagate.
+        if (body && !CHALLENGE_MARKERS.test(body)) break;
+      }
+    }
+    const ok = looksLikeJson(body);
+    return { ok, status: ok ? 200 : status, body };
+  };
 
   const fetcher: Fetcher = async (url: string) => {
     let result = await doFetch(url);
