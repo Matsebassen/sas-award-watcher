@@ -1,0 +1,71 @@
+name: SAS award check attempt
+
+# Reusable single attempt, called from check.yml. Each call runs on a fresh
+# runner VM — and therefore a fresh egress IP, which is the point: Cloudflare's
+# blocks are probabilistic per-IP, so retrying from the same VM rarely helps.
+
+on:
+  workflow_call:
+    inputs:
+      attempt:
+        description: Attempt number (used for artifact naming)
+        type: string
+        required: true
+    outputs:
+      ok:
+        description: Whether the check succeeded
+        value: ${{ jobs.run.outputs.ok }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      ok: ${{ steps.check.outcome == 'success' }}
+    env:
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}
+      RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+      # Defaults from lib/config.ts apply when these are unset.
+      # To override, define repo Variables (Settings → Variables → Actions):
+      WATCH_MONTHS: ${{ vars.WATCH_MONTHS }}
+      MIN_STAY_DAYS: ${{ vars.MIN_STAY_DAYS }}
+      MAX_STAY_DAYS: ${{ vars.MAX_STAY_DAYS }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - run: npm ci
+
+      # No `playwright install` — scripts/check.ts launches the system Google
+      # Chrome (channel: 'chrome'), which is preinstalled on ubuntu runners and
+      # has a cleaner fingerprint than Playwright's bundled Chromium.
+
+      # Chrome runs headful (clears Cloudflare far more reliably), which needs
+      # an X server on the Linux runner.
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      # continue-on-error so a blocked attempt doesn't mark the whole run red —
+      # check.yml's status job fails the run only when every attempt failed.
+      - name: Run check
+        id: check
+        continue-on-error: true
+        run: xvfb-run -a npm run check
+
+      # scripts/check.ts writes cf-block.png when it gives up on a Cloudflare
+      # block; the screenshot tells us which challenge variant we're facing.
+      - name: Upload Cloudflare block screenshot
+        if: steps.check.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-block-attempt-${{ inputs.attempt }}
+          path: cf-block.png
+          if-no-files-found: ignore

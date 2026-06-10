@@ -7,16 +7,53 @@ import {
 import { runCheck } from '../lib/check';
 import type { Fetcher, FetchResult } from '../lib/sas';
 
-const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+// Titles Cloudflare uses on its interstitials. "Just a moment" is the classic
+// managed challenge; "security verification" is the newer variant whose body
+// reads "Performing security verification".
+const CHALLENGE_TITLE =
+  /Just a moment|security verification|Attention Required/i;
 
-// Cloudflare serves a "Just a moment..." JS challenge before the real page;
-// domcontentloaded fires on the challenge itself, so wait until the title
-// changes (or a cf_clearance cookie appears) before letting the API fetch run.
-// Returns true once the page looks cleared; false if still challenged at the
-// deadline. Absence of cf_clearance is NOT a failure — most loads pass with no
-// challenge and never set the cookie, so the title check stays primary.
+const CHALLENGE_MARKERS =
+  /Just a moment|cf-mitigated|cf_chl_|__cf_chl|Attention Required|challenge-platform|enable JavaScript and cookies|Performing security verification|verifies? you are not a bot/i;
+
+// Interactive (Turnstile) challenges never auto-solve — they need a click on a
+// checkbox that lives in a cross-origin iframe behind a closed shadow root, so
+// locator clicks can't reach it. Coordinate-click the widget instead: the
+// checkbox sits ~28px from the left edge, vertically centered. Best-effort; a
+// miss just leaves the challenge to keep polling.
+async function clickTurnstile(page: Page): Promise<void> {
+  const box =
+    (await page
+      .locator('iframe[src*="challenges.cloudflare.com"]')
+      .first()
+      .boundingBox()
+      .catch(() => null)) ??
+    (await page
+      .locator('#challenge-stage')
+      .boundingBox()
+      .catch(() => null));
+  if (!box) return;
+  const x = box.x + 28;
+  const y = box.y + box.height / 2;
+  // Approach in two human-ish moves rather than teleporting onto the box.
+  await page.mouse.move(
+    x - 100 + Math.random() * 50,
+    y - 50 + Math.random() * 30,
+    { steps: 8 },
+  );
+  await page.waitForTimeout(150 + Math.random() * 250);
+  await page.mouse.move(x, y, { steps: 5 });
+  await page.waitForTimeout(100 + Math.random() * 200);
+  await page.mouse.click(x, y);
+}
+
+// Cloudflare serves an interstitial before the real page; domcontentloaded
+// fires on the challenge itself, so wait until the title changes (or a
+// cf_clearance cookie appears) before letting the API fetch run. Interactive
+// challenges get up to two checkbox clicks. Returns true once the page looks
+// cleared; false if still challenged at the deadline. Absence of cf_clearance
+// is NOT a failure — most loads pass with no challenge and never set the
+// cookie, so the title check stays primary.
 async function warmup(context: BrowserContext, page: Page): Promise<boolean> {
   try {
     await page.goto('https://www.sas.no/', {
@@ -26,19 +63,26 @@ async function warmup(context: BrowserContext, page: Page): Promise<boolean> {
   } catch {
     return false;
   }
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 45_000;
+  let clicks = 0;
   while (Date.now() < deadline) {
     const cookies = await context.cookies('https://www.sas.no').catch(() => []);
     if (cookies.some((c) => c.name === 'cf_clearance')) return true;
     const title = await page.title().catch(() => '');
-    if (title && !/Just a moment/i.test(title)) return true;
+    if (title && !CHALLENGE_TITLE.test(title)) return true;
+    if (clicks < 2) {
+      // Let the widget render, then try the checkbox; give the clearance
+      // roundtrip a few seconds before considering a second click.
+      await page.waitForTimeout(2_000);
+      await clickTurnstile(page).catch(() => {});
+      clicks++;
+      await page.waitForTimeout(3_000);
+      continue;
+    }
     await page.waitForTimeout(500);
   }
   return false;
 }
-
-const CHALLENGE_MARKERS =
-  /Just a moment|cf-mitigated|cf_chl_|__cf_chl|Attention Required|challenge-platform|enable JavaScript and cookies/i;
 
 function looksLikeJson(body: string): boolean {
   const t = body.trim();
@@ -67,27 +111,33 @@ async function makeFetcher(): Promise<{
 }> {
   // Headful (run under xvfb in CI). Headless Chromium is a primary Cloudflare
   // signal; a real headful Chrome clears managed challenges far more often.
-  const browser: Browser = await chromium.launch({
+  // Prefer the system Google Chrome (channel) over Playwright's bundled
+  // Chromium — the real Chrome binary has a consistent TLS/JS fingerprint and
+  // is preinstalled on GHA ubuntu runners. Fall back to bundled Chromium on
+  // machines without Chrome.
+  const launchOpts = {
     headless: false,
     args: ['--disable-blink-features=AutomationControlled'],
-  });
+  };
+  let browser: Browser;
+  try {
+    browser = await chromium.launch({ ...launchOpts, channel: 'chrome' });
+  } catch {
+    browser = await chromium.launch(launchOpts);
+  }
+  // No userAgent override: a spoofed UA contradicts the binary's Sec-CH-UA
+  // client hints and navigator.userAgentData, which is a Cloudflare signal.
   const context = await browser.newContext({
-    userAgent: UA,
     locale: 'en-GB',
     viewport: { width: 1280, height: 800 },
-  });
-  // Cheap automation tell: navigator.webdriver === true under automation.
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
   const page: Page = await context.newPage();
 
   await warmup(context, page);
 
-  // Shared across all months so a few pathological fetches can't stack past the
-  // workflow's 5-min timeout. Budget the fetch work to 180s, leaving room for
-  // npm ci / browser install in the job.
-  const overallDeadline = Date.now() + 180_000;
+  // Shared across all months so a few pathological fetches can't stack past
+  // the workflow's 5-min timeout.
+  const overallDeadline = Date.now() + 240_000;
   const MAX_ATTEMPTS = 4;
 
   // Navigate to the API URL instead of fetch()ing it. The SAS endpoint returns
@@ -114,6 +164,7 @@ async function makeFetcher(): Promise<{
     let body = await readBody();
     if (!looksLikeJson(body)) {
       const deadline = Date.now() + CHALLENGE_WAIT_MS;
+      let clicked = false;
       while (Date.now() < deadline) {
         await page.waitForTimeout(500);
         body = await readBody();
@@ -121,10 +172,32 @@ async function makeFetcher(): Promise<{
         // A settled, non-empty page that isn't a challenge is a real response
         // (e.g. a SAS error) — stop waiting and let it propagate.
         if (body && !CHALLENGE_MARKERS.test(body)) break;
+        if (!clicked && CHALLENGE_MARKERS.test(body)) {
+          await page.waitForTimeout(2_000);
+          await clickTurnstile(page).catch(() => {});
+          clicked = true;
+        }
       }
     }
     const ok = looksLikeJson(body);
     return { ok, status: ok ? 200 : status, body };
+  };
+
+  // On a final (post-retries) block, capture forensics so the GHA artifact
+  // tells us which challenge variant we're facing.
+  const dumpBlockDiagnostics = async (): Promise<void> => {
+    const title = await page.title().catch(() => '');
+    const hasTurnstile = await page
+      .locator('iframe[src*="challenges.cloudflare.com"]')
+      .count()
+      .then((n) => n > 0)
+      .catch(() => false);
+    console.error(
+      `[block] final block — title: ${JSON.stringify(title)}, turnstile iframe: ${hasTurnstile}`,
+    );
+    await page
+      .screenshot({ path: 'cf-block.png', fullPage: false })
+      .catch(() => {});
   };
 
   const fetcher: Fetcher = async (url: string) => {
@@ -147,6 +220,9 @@ async function makeFetcher(): Promise<{
       result = await doFetch(url);
       attempt++;
     }
+    if (isBlocked(result)) {
+      await dumpBlockDiagnostics();
+    }
     return result;
   };
 
@@ -161,12 +237,18 @@ async function makeFetcher(): Promise<{
 
 async function main(): Promise<void> {
   const { fetcher, close } = await makeFetcher();
+  let failed = false;
   try {
     const result = await runCheck(fetcher);
     console.log(JSON.stringify(result, null, 2));
+    // Partial data is already persisted and alerted; the non-zero exit lets
+    // the workflow's fresh-IP retry job re-fetch the missing months (dedup
+    // makes the re-run idempotent).
+    failed = result.failedMonths.length > 0;
   } finally {
     await close();
   }
+  if (failed) process.exit(1);
 }
 
 main().catch((err) => {

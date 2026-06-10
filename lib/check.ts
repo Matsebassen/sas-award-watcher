@@ -21,6 +21,7 @@ import {
 } from './trip';
 import { sendTripEmail, sendSingleLegEmail, type SingleLegAlert } from './notify';
 import {
+  getDirectionalSnapshot,
   setDirectionalSnapshot,
   getAlertedPairs,
   addAlertedPairs,
@@ -42,6 +43,7 @@ export type CheckResult = {
   rearmed: string[];
   newSingleLegs: SingleLegAlert[];
   rearmedSingleLegs: string[];
+  failedMonths: string[];
   durationMs: number;
 };
 
@@ -50,16 +52,34 @@ export async function runCheck(fetcher: Fetcher): Promise<CheckResult> {
   const mergedOut: CalendarMap = {};
   const mergedIn: CalendarMap = {};
 
+  // A blocked month must not fail the whole run (Cloudflare blocks are
+  // per-fetch and probabilistic) — but it also must not be read as "all its
+  // awards disappeared". Failed months are excluded from re-arm and backfilled
+  // into the persisted snapshot below.
+  const failedMonths: string[] = [];
   for (const yyyymm of WATCH_MONTHS) {
-    const data = await fetchMonth(
-      ROUTE.outbound.from,
-      ROUTE.outbound.to,
-      yyyymm,
-      fetcher,
-    );
-    Object.assign(mergedOut, data.outbound);
-    Object.assign(mergedIn, data.inbound);
+    try {
+      const data = await fetchMonth(
+        ROUTE.outbound.from,
+        ROUTE.outbound.to,
+        yyyymm,
+        fetcher,
+      );
+      Object.assign(mergedOut, data.outbound);
+      Object.assign(mergedIn, data.inbound);
+    } catch (err) {
+      console.error(
+        `[check] month ${yyyymm} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      failedMonths.push(yyyymm);
+    }
   }
+  if (failedMonths.length === WATCH_MONTHS.length) {
+    throw new Error(`all watched months failed: ${failedMonths.join(', ')}`);
+  }
+  const failedMonthSet = new Set(failedMonths);
+  const inFailedMonth = (yyyymmdd: string): boolean =>
+    failedMonthSet.has(yyyymmdd.slice(0, 6));
 
   const merged: DirectionalSnapshot = {
     outbound: mergedOut,
@@ -76,7 +96,11 @@ export async function runCheck(fetcher: Fetcher): Promise<CheckResult> {
   const previouslyAlerted = await getAlertedPairs();
 
   const newPairs = pairs.filter((p) => !previouslyAlerted.has(pairKey(p)));
-  const rearmKeys = [...previouslyAlerted].filter((k) => !currentKeys.has(k));
+  // Re-arm only pairs whose dates were all actually fetched this run — a pair
+  // touching a failed month is invisible, not gone.
+  const rearmKeys = [...previouslyAlerted].filter(
+    (k) => !currentKeys.has(k) && !k.split('-').some(inFailedMonth),
+  );
 
   if (newPairs.length > 0) {
     await sendTripEmail(newPairs);
@@ -100,7 +124,7 @@ export async function runCheck(fetcher: Fetcher): Promise<CheckResult> {
     (k) => !previouslyAlertedSingles.has(k),
   );
   const rearmSingleKeys = [...previouslyAlertedSingles].filter(
-    (k) => !currentSingleKeys.has(k),
+    (k) => !currentSingleKeys.has(k) && !inFailedMonth(k.slice(k.indexOf(':') + 1)),
   );
 
   const newSingleLegs: SingleLegAlert[] = newSingleKeys.map((k) => {
@@ -120,6 +144,19 @@ export async function runCheck(fetcher: Fetcher): Promise<CheckResult> {
     await removeAlertedSingleLegs(rearmSingleKeys);
   }
 
+  // Keep the previous snapshot's data for failed months so the dashboard
+  // doesn't lose them. Done after pair generation: alerts and re-arm only ever
+  // see freshly fetched data.
+  if (failedMonths.length > 0) {
+    const prev = await getDirectionalSnapshot();
+    for (const [date, day] of Object.entries(prev.outbound)) {
+      if (inFailedMonth(date) && !(date in mergedOut)) mergedOut[date] = day;
+    }
+    for (const [date, day] of Object.entries(prev.inbound)) {
+      if (inFailedMonth(date) && !(date in mergedIn)) mergedIn[date] = day;
+    }
+  }
+
   await setDirectionalSnapshot(merged);
   await setMeta({
     lastCheckedAt: new Date().toISOString(),
@@ -136,6 +173,7 @@ export async function runCheck(fetcher: Fetcher): Promise<CheckResult> {
     rearmed: rearmKeys,
     newSingleLegs,
     rearmedSingleLegs: rearmSingleKeys,
+    failedMonths,
     durationMs: Date.now() - start,
   };
 }
