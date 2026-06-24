@@ -2,8 +2,7 @@ name: Hourly SAS award check
 
 on:
   schedule:
-    # Off the congested minute-0 slot: GHA delays/drops :00 crons the most,
-    # and it's the most bot-stampeded minute from datacenter IPs.
+    # Off the congested minute-0 slot: GHA delays/drops :00 crons the most.
     - cron: '37 * * * *'
   workflow_dispatch: {}
 
@@ -11,42 +10,59 @@ concurrency:
   group: sas-check
   cancel-in-progress: false
 
-# Cloudflare blocks are probabilistic per-IP; each attempt job gets a fresh
-# runner VM (fresh IP). Later attempts only run when the earlier ones were
-# blocked, and the run only goes red when every attempt failed.
+# The watcher egresses through a fixed residential proxy (PROXY_URL), so the
+# egress IP is the same no matter which runner VM it lands on. The old 3-attempt
+# fan-out existed to dodge per-IP Cloudflare blocks by landing on fresh runner
+# IPs — but with the proxy a retry reuses the same IP, so it only re-runs the
+# (proxy-metered) warmup for no benefit. One attempt; the run goes red if it's
+# blocked, and uploads the challenge screenshot for diagnosis.
 jobs:
-  attempt-1:
-    uses: ./.github/workflows/check-run.yml
-    with:
-      attempt: '1'
-    secrets: inherit
-
-  attempt-2:
-    needs: attempt-1
-    if: needs.attempt-1.outputs.ok != 'true'
-    uses: ./.github/workflows/check-run.yml
-    with:
-      attempt: '2'
-    secrets: inherit
-
-  attempt-3:
-    needs: [attempt-1, attempt-2]
-    if: always() && needs.attempt-1.outputs.ok != 'true' && needs.attempt-2.outputs.ok != 'true'
-    uses: ./.github/workflows/check-run.yml
-    with:
-      attempt: '3'
-    secrets: inherit
-
-  status:
-    needs: [attempt-1, attempt-2, attempt-3]
-    if: always()
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      RESEND_TO_EMAIL: ${{ secrets.RESEND_TO_EMAIL }}
+      RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+      # Static residential proxy so the browser egresses from a clean IP instead
+      # of the Cloudflare-blocked GHA datacenter range. Unset = direct.
+      PROXY_URL: ${{ secrets.PROXY_URL }}
+      # Defaults from lib/config.ts apply when these are unset.
+      # To override, define repo Variables (Settings → Variables → Actions):
+      WATCH_MONTHS: ${{ vars.WATCH_MONTHS }}
+      MIN_STAY_DAYS: ${{ vars.MIN_STAY_DAYS }}
+      MAX_STAY_DAYS: ${{ vars.MAX_STAY_DAYS }}
+
     steps:
-      # Skipped attempts have empty outputs, which counts as "not ok" — but a
-      # skipped attempt-2/3 implies an earlier attempt succeeded, so the
-      # condition is only true when every attempt actually ran and failed.
-      - name: Fail when every attempt was blocked
-        if: needs.attempt-1.outputs.ok != 'true' && needs.attempt-2.outputs.ok != 'true' && needs.attempt-3.outputs.ok != 'true'
-        run: |
-          echo 'All attempts were blocked.'
-          exit 1
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - run: npm ci
+
+      # No `playwright install` — scripts/check.ts launches the system Google
+      # Chrome (channel: 'chrome'), which is preinstalled on ubuntu runners and
+      # has a cleaner fingerprint than Playwright's bundled Chromium.
+
+      # Chrome runs headful (clears Cloudflare far more reliably), which needs
+      # an X server on the Linux runner.
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Run check
+        run: xvfb-run -a npm run check
+
+      # scripts/check.ts writes cf-block.png when it gives up on a Cloudflare
+      # block; the screenshot tells us which challenge variant we're facing.
+      - name: Upload Cloudflare block screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-block
+          path: cf-block.png
+          if-no-files-found: ignore

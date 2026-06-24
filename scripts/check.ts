@@ -84,6 +84,36 @@ async function warmup(context: BrowserContext, page: Page): Promise<boolean> {
   return false;
 }
 
+// Parse PROXY_URL into Playwright's proxy shape. Cloudflare blocks the GHA
+// runner's datacenter IP; routing the browser through a static *residential*
+// proxy gives it a clean IP that clears most challenges on its own. Accepts a
+// URL (`http://user:pass@host:port`, also socks5://) or the bare
+// `host:port:user:pass` / `host:port` form many residential providers hand out.
+function parseProxy(
+  raw: string | undefined,
+): { server: string; username?: string; password?: string } | undefined {
+  const v = (raw ?? '').trim();
+  if (!v) return undefined;
+  if (/^\w+:\/\//.test(v)) {
+    try {
+      const u = new URL(v);
+      const proxy: { server: string; username?: string; password?: string } = {
+        server: `${u.protocol}//${u.host}`,
+      };
+      if (u.username) proxy.username = decodeURIComponent(u.username);
+      if (u.password) proxy.password = decodeURIComponent(u.password);
+      return proxy;
+    } catch {
+      return undefined;
+    }
+  }
+  const p = v.split(':');
+  if (p.length === 2) return { server: `http://${p[0]}:${p[1]}` };
+  if (p.length === 4)
+    return { server: `http://${p[0]}:${p[1]}`, username: p[2], password: p[3] };
+  return undefined;
+}
+
 function looksLikeJson(body: string): boolean {
   const t = body.trim();
   if (t[0] !== '{' && t[0] !== '[') return false;
@@ -127,11 +157,39 @@ async function makeFetcher(): Promise<{
   }
   // No userAgent override: a spoofed UA contradicts the binary's Sec-CH-UA
   // client hints and navigator.userAgentData, which is a Cloudflare signal.
+  const proxy = parseProxy(process.env.PROXY_URL);
+  if (proxy) {
+    console.error(`[proxy] routing through ${proxy.server}`);
+  } else if (process.env.PROXY_URL) {
+    console.error('[proxy] PROXY_URL set but unparseable — running direct');
+  }
   const context = await browser.newContext({
     locale: 'en-GB',
     viewport: { width: 1280, height: 800 },
+    ...(proxy ? { proxy } : {}),
   });
   const page: Page = await context.newPage();
+
+  // The warmup loads the full (asset-heavy) sas.no homepage every run; on a
+  // metered residential proxy that bandwidth is the only real cost. Drop the
+  // purely-presentational resource types (images/media/fonts) — they're not
+  // needed to clear a Cloudflare challenge or to read the JSON API. Scripts,
+  // stylesheets, XHR/fetch, and the document itself are left untouched, and
+  // anything served from Cloudflare's challenge infrastructure is always
+  // allowed so an interactive Turnstile can still render and solve.
+  const BLOCKED_TYPES = new Set(['image', 'media', 'font']);
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const url = req.url();
+    if (
+      BLOCKED_TYPES.has(req.resourceType()) &&
+      !url.includes('challenges.cloudflare.com') &&
+      !url.includes('cdn-cgi')
+    ) {
+      return route.abort();
+    }
+    return route.continue();
+  });
 
   await warmup(context, page);
 
