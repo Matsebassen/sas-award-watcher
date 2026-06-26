@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "check": "tsx scripts/check.ts"
+    "check": "tsx --env-file-if-exists=.env.local scripts/check.ts",
+    "debug": "tsx --env-file-if-exists=.env.local scripts/debug.ts"
   },
   "dependencies": {
     "@upstash/redis": "^1.37.0",

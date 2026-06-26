@@ -114,6 +114,31 @@ function parseProxy(
   return undefined;
 }
 
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+// Build a proxy whose exit IP is FRESH on every call. dataimpulse (like most
+// residential pools) rotates the exit IP when a `;sessid.<token>` is appended to
+// the username, and pins it when the username is static. A static username is
+// why re-fetching after a block never helped — every attempt reused the SAME
+// IP. The pool is mixed quality: some sessions land on carrier/hosting ASNs
+// (GlobalConnect, Glesys) that SAS's WAF blocks on the pricing API even though
+// they clear the homepage, others on genuine residential ISPs (Telia, Lyse,
+// NextGenTel) that clear both. Rotating the session on each retry walks us off a
+// flagged IP onto a clean residential one. No-op when PROXY_URL has no auth.
+let proxySessionSeq = 0;
+function freshProxy():
+  | { server: string; username?: string; password?: string }
+  | undefined {
+  const base = parseProxy(process.env.PROXY_URL);
+  if (!base || !base.username) return base;
+  const token =
+    Date.now().toString(36) +
+    (proxySessionSeq++).toString(36) +
+    Math.floor(Math.random() * 1e6).toString(36);
+  return { ...base, username: `${base.username};sessid.${token}` };
+}
+
 function looksLikeJson(body: string): boolean {
   const t = body.trim();
   if (t[0] !== '{' && t[0] !== '[') return false;
@@ -157,18 +182,9 @@ async function makeFetcher(): Promise<{
   }
   // No userAgent override: a spoofed UA contradicts the binary's Sec-CH-UA
   // client hints and navigator.userAgentData, which is a Cloudflare signal.
-  const proxy = parseProxy(process.env.PROXY_URL);
-  if (proxy) {
-    console.error(`[proxy] routing through ${proxy.server}`);
-  } else if (process.env.PROXY_URL) {
+  if (!parseProxy(process.env.PROXY_URL) && process.env.PROXY_URL) {
     console.error('[proxy] PROXY_URL set but unparseable — running direct');
   }
-  const context = await browser.newContext({
-    locale: 'en-GB',
-    viewport: { width: 1280, height: 800 },
-    ...(proxy ? { proxy } : {}),
-  });
-  const page: Page = await context.newPage();
 
   // The warmup loads the full (asset-heavy) sas.no homepage every run; on a
   // metered residential proxy that bandwidth is the only real cost. Drop the
@@ -178,20 +194,40 @@ async function makeFetcher(): Promise<{
   // anything served from Cloudflare's challenge infrastructure is always
   // allowed so an interactive Turnstile can still render and solve.
   const BLOCKED_TYPES = new Set(['image', 'media', 'font']);
-  await page.route('**/*', (route) => {
-    const req = route.request();
-    const url = req.url();
-    if (
-      BLOCKED_TYPES.has(req.resourceType()) &&
-      !url.includes('challenges.cloudflare.com') &&
-      !url.includes('cdn-cgi')
-    ) {
-      return route.abort();
-    }
-    return route.continue();
-  });
+  const attachRoutes = (p: Page) =>
+    p.route('**/*', (route) => {
+      const req = route.request();
+      const url = req.url();
+      if (
+        BLOCKED_TYPES.has(req.resourceType()) &&
+        !url.includes('challenges.cloudflare.com') &&
+        !url.includes('cdn-cgi')
+      ) {
+        return route.abort();
+      }
+      return route.continue();
+    });
 
-  await warmup(context, page);
+  // Open a context bound to a FRESH proxy exit IP (see freshProxy), wire the
+  // resource filter, and warm up sas.no so Cloudflare issues a cf_clearance
+  // cookie for THIS IP before we touch the API. `context`/`page` are mutable so
+  // a blocked fetch can rotate onto a new IP mid-run; the fetch closures below
+  // always read the current session. Returns the warmup's cleared flag.
+  let context!: BrowserContext;
+  let page!: Page;
+  const openSession = async (): Promise<boolean> => {
+    const proxy = freshProxy();
+    if (proxy) console.error('[proxy] opening session on a fresh exit IP');
+    context = await browser.newContext({
+      locale: 'en-GB',
+      viewport: { width: 1280, height: 800 },
+      ...(proxy ? { proxy } : {}),
+    });
+    page = await context.newPage();
+    await attachRoutes(page);
+    return warmup(context, page);
+  };
+  await openSession();
 
   // Shared across all months so a few pathological fetches can't stack past
   // the workflow's 5-min timeout.
@@ -263,18 +299,21 @@ async function makeFetcher(): Promise<{
     let attempt = 1;
     while (isBlocked(result) && attempt < MAX_ATTEMPTS) {
       if (Date.now() >= overallDeadline) break;
-      const cleared = await warmup(context, page);
       const wait =
         Math.min(2000 * 2 ** (attempt - 1), 15_000) +
         Math.floor(Math.random() * 1000);
       if (Date.now() + wait >= overallDeadline) break;
       console.error(
-        `[retry] blocked (status ${result.status}, warmup ${
-          cleared ? 'ok' : 'unconfirmed'
-        }), attempt ${attempt + 1}/${MAX_ATTEMPTS} after ${wait}ms — ${url}\n` +
+        `[retry] blocked (status ${result.status}), rotating to a fresh proxy ` +
+          `IP — attempt ${attempt + 1}/${MAX_ATTEMPTS} after ${wait}ms — ${url}\n` +
           `        body: ${result.body.slice(0, 80).replace(/\s+/g, ' ')}`,
       );
-      await page.waitForTimeout(wait);
+      // Don't wait on the (possibly dead) blocked page — sleep, then tear the
+      // session down and warm up a new one on a different exit IP.
+      await sleep(wait);
+      await context.close().catch(() => {});
+      const cleared = await openSession();
+      console.error(`[retry] fresh session warmup ${cleared ? 'ok' : 'unconfirmed'}`);
       result = await doFetch(url);
       attempt++;
     }
