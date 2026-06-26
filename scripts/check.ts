@@ -58,12 +58,15 @@ async function warmup(context: BrowserContext, page: Page): Promise<boolean> {
   try {
     await page.goto('https://www.sas.no/', {
       waitUntil: 'domcontentloaded',
-      timeout: 35_000,
+      timeout: 20_000,
     });
   } catch {
     return false;
   }
-  const deadline = Date.now() + 45_000;
+  // A clean residential IP clears in ~2s; a blocked one never clears no matter
+  // how long we wait. So cap the wait low and let the caller rotate to a fresh
+  // IP rather than burning 45s hoping a doomed challenge auto-solves.
+  const deadline = Date.now() + 12_000;
   let clicks = 0;
   while (Date.now() < deadline) {
     const cookies = await context.cookies('https://www.sas.no').catch(() => []);
@@ -237,11 +240,13 @@ async function makeFetcher(): Promise<{
   const FETCH_BUDGET_MS = 240_000; // ~4 min of browser work, total
   // Don't START work we can't finish before the deadline: skip a month's fetch
   // unless a full navigation+challenge-poll fits, and skip a rotation unless a
-  // full warmup+fetch fits. This bounds the worst-case overrun to one in-flight
-  // operation instead of letting a late attempt run ~160s past the deadline.
-  const SINGLE_FETCH_MS = 70_000;
-  const ROTATION_COST_MS = 150_000;
-  const MAX_ATTEMPTS = 4;
+  // full warmup+fetch fits. With the short per-op timeouts above, one attempt is
+  // cheap (~30-60s worst case), so we can afford many rotations — the strategy
+  // is "try a fresh IP fast" rather than "wait out one blocked IP". Tuned so the
+  // budget allows several IP rotations instead of strangling them after one.
+  const SINGLE_FETCH_MS = 32_000;
+  const ROTATION_COST_MS = 65_000;
+  const MAX_ATTEMPTS = 8;
   const overallDeadline = Date.now() + FETCH_BUDGET_MS;
 
   await openSession();
@@ -252,7 +257,7 @@ async function makeFetcher(): Promise<{
   // an in-page fetch() only ever receives the challenge HTML and can never
   // solve it. When the interstitial is showing, poll until it auto-solves into
   // the JSON or we hit the deadline.
-  const CHALLENGE_WAIT_MS = 30_000;
+  const CHALLENGE_WAIT_MS = 10_000;
   const readBody = (): Promise<string> =>
     page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
 
@@ -261,7 +266,7 @@ async function makeFetcher(): Promise<{
     try {
       resp = await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: 35_000,
+        timeout: 20_000,
       });
     } catch {
       return { ok: false, status: 0, body: '' };
