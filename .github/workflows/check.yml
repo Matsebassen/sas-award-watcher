@@ -19,7 +19,11 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # Backstop only. scripts/check.ts self-bounds its browser work to ~4 min
+    # (FETCH_BUDGET_MS) and persists partial results, so a healthy run finishes
+    # in ~5-6 min including runner setup. This cap just kills a truly hung run;
+    # don't rely on it for normal completion.
+    timeout-minutes: 10
     env:
       UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
       UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}

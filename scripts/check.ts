@@ -227,12 +227,24 @@ async function makeFetcher(): Promise<{
     await attachRoutes(page);
     return warmup(context, page);
   };
-  await openSession();
-
-  // Shared across all months so a few pathological fetches can't stack past
-  // the workflow's 5-min timeout.
-  const overallDeadline = Date.now() + 240_000;
+  // One wall-clock budget for ALL browser work — the initial warmup plus every
+  // month's fetches and IP rotations. Started BEFORE the first warmup so the
+  // warmup (up to ~80s) actually counts against it; previously it didn't, which
+  // let a run drift ~80s + an over-the-line rotation past the intended cap and
+  // blow the GHA job timeout. The job's `timeout-minutes` is only a backstop —
+  // we aim to finish well under it so runCheck's end-of-loop persist always
+  // runs. Sized to leave headroom for runner setup (npm ci, xvfb) under the cap.
+  const FETCH_BUDGET_MS = 240_000; // ~4 min of browser work, total
+  // Don't START work we can't finish before the deadline: skip a month's fetch
+  // unless a full navigation+challenge-poll fits, and skip a rotation unless a
+  // full warmup+fetch fits. This bounds the worst-case overrun to one in-flight
+  // operation instead of letting a late attempt run ~160s past the deadline.
+  const SINGLE_FETCH_MS = 70_000;
+  const ROTATION_COST_MS = 150_000;
   const MAX_ATTEMPTS = 4;
+  const overallDeadline = Date.now() + FETCH_BUDGET_MS;
+
+  await openSession();
 
   // Navigate to the API URL instead of fetch()ing it. The SAS endpoint returns
   // application/json, which Chromium renders as text we read back. Crucially, a
@@ -295,14 +307,22 @@ async function makeFetcher(): Promise<{
   };
 
   const fetcher: Fetcher = async (url: string) => {
+    // Out of budget: fail this month fast (don't start a ~65s navigation we
+    // can't finish) so runCheck marks it failed, moves on, and still persists
+    // the months that did succeed. A later hourly run re-fetches it (dedup keeps
+    // re-runs idempotent).
+    if (overallDeadline - Date.now() < SINGLE_FETCH_MS) {
+      console.error(`[budget] skipping fetch, out of time budget — ${url}`);
+      return { ok: false, status: 0, body: '' };
+    }
     let result = await doFetch(url);
     let attempt = 1;
     while (isBlocked(result) && attempt < MAX_ATTEMPTS) {
-      if (Date.now() >= overallDeadline) break;
+      // Only rotate if a full warmup+fetch still fits before the deadline.
+      if (overallDeadline - Date.now() < ROTATION_COST_MS) break;
       const wait =
         Math.min(2000 * 2 ** (attempt - 1), 15_000) +
         Math.floor(Math.random() * 1000);
-      if (Date.now() + wait >= overallDeadline) break;
       console.error(
         `[retry] blocked (status ${result.status}), rotating to a fresh proxy ` +
           `IP — attempt ${attempt + 1}/${MAX_ATTEMPTS} after ${wait}ms — ${url}\n` +
