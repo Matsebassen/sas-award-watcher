@@ -5,6 +5,7 @@ import {
   type Page,
 } from 'playwright';
 import { runCheck } from '../lib/check';
+import { ROUTES } from '../lib/config';
 import type { Fetcher, FetchResult } from '../lib/sas';
 
 // Titles Cloudflare uses on its interstitials. "Just a moment" is the classic
@@ -361,12 +362,16 @@ async function main(): Promise<void> {
   const { fetcher, close } = await makeFetcher();
   let failed = false;
   try {
-    const result = await runCheck(fetcher);
-    console.log(JSON.stringify(result, null, 2));
-    // Partial data is already persisted and alerted; the non-zero exit lets
-    // the workflow's fresh-IP retry job re-fetch the missing months (dedup
-    // makes the re-run idempotent).
-    failed = result.failedMonths.length > 0;
+    // Routes run sequentially on the shared page — never in parallel, or SAS's
+    // anti-scraping kicks in (same rule as months within a route).
+    for (const route of ROUTES) {
+      const result = await runCheck(fetcher, route);
+      console.log(JSON.stringify({ route: route.key, ...result }, null, 2));
+      // Partial data is already persisted and alerted; the non-zero exit lets
+      // the workflow's fresh-IP retry job re-fetch the missing months (dedup
+      // makes the re-run idempotent).
+      if (result.failedMonths.length > 0) failed = true;
+    }
   } finally {
     await close();
   }

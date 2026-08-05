@@ -40,10 +40,10 @@ This watcher tracks **bookable round-trip pairs** — not single dates — betwe
 
 ```
 GitHub Actions (hourly cron, .github/workflows/check.yml)
-   └─► npm run check  →  scripts/check.ts
+   └─► npm run check  →  scripts/check.ts  (loops ROUTES sequentially)
           ├─► Playwright Chromium → goto sas.no/ (warmup) → page.evaluate fetch
-          ├─► lib/check.ts:runCheck (sequential per month)
-          │     · merges outbound + inbound calendars across all WATCH_MONTHS
+          ├─► lib/check.ts:runCheck(fetcher, route) (sequential per month)
+          │     · merges outbound + inbound calendars across route.watchMonths
           │     · lib/trip.ts:findValidPairs generates (out,in) pairs
           │     · diff vs Upstash alerted-pairs set, dedup
           ├─► lib/notify.ts:sendTripEmail (grouped by outbound date)
@@ -54,14 +54,14 @@ Browser ─► /  (app/page.tsx, on Vercel)  ─► reads from Upstash, recomput
 
 ### Module boundaries
 
-- `lib/config.ts` — single source of truth: `ROUTE` (outbound + inbound objects), `MAX_POINTS`, `MIN_STAY_DAYS`, `MAX_STAY_DAYS`, `WATCH_MONTHS` (env-overridable list of YYYYMM).
-- `lib/sas.ts` — `Fetcher` type and `fetchMonth(outFrom, outTo, yyyymm, fetcher) → DirectionalSnapshot { outbound, inbound }`. **Important**: a single SAS call returns both directions; we parse both. `parseDayMap` defaults `isStandardAward` to `false` when the field is absent (most days don't carry it).
-- `lib/trip.ts` — pure logic: `findValidPairs(outbound, inbound, opts)` and `pairKey({outDate, retDate})`. Used by both the watcher and the dashboard.
-- `lib/check.ts` — orchestrator. Iterates `WATCH_MONTHS` sequentially, merges directional calendars, generates pairs, diffs vs `alerted:pairs:SVG-SEL`, sends email, persists. **Re-arm logic**: when a previously-alerted pair is no longer valid (either leg disappeared or repriced), its dedup entry is removed so a fresh re-appearance triggers another email.
-- `lib/storage.ts` — Upstash reads/writes. Two snapshot keys (`snapshot:SVG-SEL:outbound` / `:inbound`), one pair-dedup set, one alerts list, one meta object. `getAlertedPairs` casts each value to `String` because Upstash auto-coerces numeric-looking strings to numbers, which breaks `Set<string>.has()`.
-- `lib/notify.ts` — Resend wrapper. Groups pairs by outbound date for readability. From-address defaults to `onboarding@resend.dev` so no domain verification is needed.
-- `scripts/check.ts` — runtime entry point. Launches Chromium with `--disable-blink-features=AutomationControlled`, warms `sas.no/`, builds a `Fetcher` that delegates to `page.evaluate(fetch(...))`, calls `runCheck`.
-- `scripts/debug.ts` — manual diagnostic. Takes one or more `YYYYMM` args; prints standard-award dates per direction.
+- `lib/config.ts` — single source of truth. `ROUTES: Route[]` is the list of watched routes (currently `SVG-SEL` and `SVG-BCN`); each `Route` carries its own `key`, `outbound`/`inbound` airports, `maxPoints`, `minStayDays`, `maxStayDays`, `watchMonths`, and `watchPairs`/`watchSingles` toggles. Optional `outboundDates`/`inboundDates` (YYYYMMDD allow-lists) narrow detection to exact legs — Barcelona uses them to watch one specific round trip. Per-route env overrides are namespaced (Seoul uses the unprefixed `WATCH_MONTHS`/`MIN_STAY_DAYS`/`MAX_STAY_DAYS`; Barcelona uses `BCN_*`, incl. `BCN_OUTBOUND_DATES`/`BCN_INBOUND_DATES`). `DEFAULT_ROUTE = ROUTES[0]` is what the dashboard renders.
+- `lib/sas.ts` — `Fetcher` type and `fetchMonth(outFrom, outTo, yyyymm, fetcher) → DirectionalSnapshot { outbound, inbound }`. **Important**: a single SAS call returns both directions; we parse both. `parseDayMap` defaults `isStandardAward` to `false` when the field is absent (most days don't carry it). Route-agnostic.
+- `lib/trip.ts` — pure logic: `findValidPairs(outbound, inbound, opts)` and `pairKey({outDate, retDate})`. Used by both the watcher and the dashboard. Route-agnostic.
+- `lib/check.ts` — orchestrator. `runCheck(fetcher, route)` iterates `route.watchMonths` sequentially, merges directional calendars, generates pairs/singles (gated by `route.watchPairs`/`route.watchSingles`), diffs vs `alerted:pairs:<route.key>`, sends email, persists. **Re-arm logic**: when a previously-alerted pair is no longer valid (either leg disappeared or repriced), its dedup entry is removed so a fresh re-appearance triggers another email.
+- `lib/storage.ts` — Upstash reads/writes. Every function takes a `routeKey` first arg; keys are namespaced per route (`snapshot:<key>:outbound`/`:inbound`, `alerted:pairs:<key>`, `alerted:singles:<key>`, `alerts:<key>`, `meta:<key>`), so routes never collide. `getAlertedPairs` casts each value to `String` because Upstash auto-coerces numeric-looking strings to numbers, which breaks `Set<string>.has()`.
+- `lib/notify.ts` — Resend wrapper. `sendTripEmail(route, pairs)` / `sendSingleLegEmail(route, legs)` — subject lines are prefixed with the route pair (e.g. `SVG↔BCN`) so the routes' emails are self-distinguishing. Groups pairs by outbound date for readability. From-address defaults to `onboarding@resend.dev` so no domain verification is needed.
+- `scripts/check.ts` — runtime entry point. Launches Chromium with `--disable-blink-features=AutomationControlled`, warms `sas.no/`, builds a `Fetcher` that delegates to `page.evaluate(fetch(...))`, then loops `ROUTES` **sequentially** calling `runCheck(fetcher, route)` on the shared page (parallel routes would trip anti-scraping, same as parallel months).
+- `scripts/debug.ts` — manual diagnostic. Optional leading `--route=SVG-BCN` (defaults to `DEFAULT_ROUTE`) plus one or more `YYYYMM` args; prints standard-award dates per direction.
 
 ### Data shape
 
@@ -91,9 +91,9 @@ The boolean is the SAS-authoritative marker; the price guard protects against sc
 
 ### Configuration boundaries
 
-- All env vars in `.env.example`. `RESEND_*` and `UPSTASH_*` are required for the runner. `WATCH_MONTHS`, `MIN_STAY_DAYS`, `MAX_STAY_DAYS` have defaults in `lib/config.ts`.
-- Dashboard on Vercel needs `UPSTASH_*` plus `WATCH_MONTHS`/`MIN_STAY_DAYS`/`MAX_STAY_DAYS` so it renders the right window.
-- GitHub Actions uses **secrets** for credentials and **variables** (`vars.WATCH_MONTHS` etc.) for the watch window.
+- All env vars in `.env.example`. `RESEND_*` and `UPSTASH_*` are required for the runner. Per-route watch windows have defaults in `lib/config.ts`: Seoul reads `WATCH_MONTHS`/`MIN_STAY_DAYS`/`MAX_STAY_DAYS`; Barcelona reads `BCN_WATCH_MONTHS`/`BCN_MIN_STAY_DAYS`/`BCN_MAX_STAY_DAYS`.
+- Dashboard on Vercel needs `UPSTASH_*` plus the Seoul window vars (`WATCH_MONTHS`/`MIN_STAY_DAYS`/`MAX_STAY_DAYS`) — it renders `DEFAULT_ROUTE` only.
+- GitHub Actions uses **secrets** for credentials and **variables** (`vars.WATCH_MONTHS`, and optionally `vars.BCN_WATCH_MONTHS` etc.) for the watch windows.
 
 ## Things that will trip you up
 

@@ -35,9 +35,16 @@ jobs:
       PROXY_URL: ${{ secrets.PROXY_URL }}
       # Defaults from lib/config.ts apply when these are unset.
       # To override, define repo Variables (Settings → Variables → Actions):
+      # SVG↔SEL (Seoul) route:
       WATCH_MONTHS: ${{ vars.WATCH_MONTHS }}
       MIN_STAY_DAYS: ${{ vars.MIN_STAY_DAYS }}
       MAX_STAY_DAYS: ${{ vars.MAX_STAY_DAYS }}
+      # SVG↔BCN (Barcelona) route:
+      BCN_WATCH_MONTHS: ${{ vars.BCN_WATCH_MONTHS }}
+      BCN_MIN_STAY_DAYS: ${{ vars.BCN_MIN_STAY_DAYS }}
+      BCN_MAX_STAY_DAYS: ${{ vars.BCN_MAX_STAY_DAYS }}
+      BCN_OUTBOUND_DATES: ${{ vars.BCN_OUTBOUND_DATES }}
+      BCN_INBOUND_DATES: ${{ vars.BCN_INBOUND_DATES }}
 
     steps:
       - uses: actions/checkout@v4

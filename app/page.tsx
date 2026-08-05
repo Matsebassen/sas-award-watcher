@@ -3,25 +3,22 @@ import {
   getAlerts,
   getMeta,
 } from '@/lib/storage';
-import {
-  ROUTE,
-  MAX_POINTS,
-  MIN_STAY_DAYS,
-  MAX_STAY_DAYS,
-  WATCH_MONTHS,
-} from '@/lib/config';
+import { DEFAULT_ROUTE } from '@/lib/config';
 import type { CalendarMap, DirectionalSnapshot } from '@/lib/sas';
 import { findValidPairs } from '@/lib/trip';
 
 export const dynamic = 'force-dynamic';
 
+const ROUTE = DEFAULT_ROUTE;
+const { maxPoints: MAX_POINTS, minStayDays: MIN_STAY_DAYS, maxStayDays: MAX_STAY_DAYS, watchMonths: WATCH_MONTHS } = ROUTE;
+
 export default async function Page() {
   const [snapshot, alerts, meta] = await Promise.all([
-    getDirectionalSnapshot().catch(
+    getDirectionalSnapshot(ROUTE.key).catch(
       () => ({ outbound: {}, inbound: {} }) as DirectionalSnapshot,
     ),
-    getAlerts().catch(() => []),
-    getMeta().catch(() => null),
+    getAlerts(ROUTE.key).catch(() => []),
+    getMeta(ROUTE.key).catch(() => null),
   ]);
 
   const pairs = findValidPairs(snapshot.outbound, snapshot.inbound, {

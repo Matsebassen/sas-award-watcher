@@ -1,16 +1,33 @@
 import { chromium } from 'playwright';
 import { buildMonthUrl } from '../lib/sas';
+import { ROUTES, DEFAULT_ROUTE } from '../lib/config';
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 
 async function main(): Promise<void> {
-  const months = process.argv.slice(2);
-  if (months.length === 0) {
-    console.error('Usage: tsx scripts/debug.ts YYYYMM [YYYYMM ...]');
+  const args = process.argv.slice(2);
+
+  // Optional leading --route=SVG-BCN selects which route's airports to probe.
+  const routeArg = args.find((a) => a.startsWith('--route='));
+  const routeKey = routeArg?.slice('--route='.length) ?? DEFAULT_ROUTE.key;
+  const route = ROUTES.find((r) => r.key === routeKey);
+  if (!route) {
+    console.error(
+      `Unknown route "${routeKey}". Known: ${ROUTES.map((r) => r.key).join(', ')}`,
+    );
     process.exit(1);
   }
+
+  const months = args.filter((a) => !a.startsWith('--'));
+  if (months.length === 0) {
+    console.error(
+      'Usage: tsx scripts/debug.ts [--route=SVG-BCN] YYYYMM [YYYYMM ...]',
+    );
+    process.exit(1);
+  }
+  console.log(`Route ${route.key}: ${route.outbound.from} ↔ ${route.outbound.to}`);
 
   const browser = await chromium.launch({
     headless: true,
@@ -21,7 +38,7 @@ async function main(): Promise<void> {
   await page.goto('https://www.sas.no/', { waitUntil: 'domcontentloaded' });
 
   for (const month of months) {
-    const url = buildMonthUrl('SVG', 'SEL', month);
+    const url = buildMonthUrl(route.outbound.from, route.outbound.to, month);
     const result = await page.evaluate(async (u: string) => {
       const r = await fetch(u, { credentials: 'include' });
       return { status: r.status, body: await r.text() };

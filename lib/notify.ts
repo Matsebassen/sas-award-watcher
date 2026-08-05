@@ -1,5 +1,5 @@
 import { Resend } from 'resend';
-import { ROUTE } from './config';
+import type { Route } from './config';
 import type { LegDirection, TripPair } from './trip';
 
 export type SingleLegAlert = {
@@ -8,7 +8,10 @@ export type SingleLegAlert = {
   price: number;
 };
 
-export async function sendTripEmail(pairs: TripPair[]): Promise<void> {
+export async function sendTripEmail(
+  route: Route,
+  pairs: TripPair[],
+): Promise<void> {
   if (pairs.length === 0) return;
 
   const apiKey = process.env.RESEND_API_KEY;
@@ -24,7 +27,7 @@ export async function sendTripEmail(pairs: TripPair[]): Promise<void> {
   const resend = new Resend(apiKey);
 
   const subject =
-    `${ROUTE.outbound.from}↔${ROUTE.outbound.to}: ` +
+    `${route.outbound.from}↔${route.outbound.to}: ` +
     `${pairs.length} bookable trip${pairs.length === 1 ? '' : 's'} available`;
 
   // Group by outbound date for a more readable email.
@@ -44,7 +47,7 @@ export async function sendTripEmail(pairs: TripPair[]): Promise<void> {
       const returns = items
         .map((p) => {
           const retHuman = humanDate(p.retDate);
-          const link = bookingLink(p.outDate, p.retDate);
+          const link = bookingLink(route, p.outDate, p.retDate);
           return `<li><a href="${link}">${retHuman}</a> — ${p.stayDays} day stay</li>`;
         })
         .join('');
@@ -54,7 +57,7 @@ export async function sendTripEmail(pairs: TripPair[]): Promise<void> {
 
   const html =
     `<p>New Eurobonus standard-award round trips for ` +
-    `<strong>${ROUTE.outbound.from} ↔ ${ROUTE.outbound.to}</strong> ` +
+    `<strong>${route.outbound.from} ↔ ${route.outbound.to}</strong> ` +
     `(${pairs[0].outPrice.toLocaleString()} pts each way):</p>` +
     blocks +
     `<p style="color:#888;font-size:12px;margin-top:24px">Sent by your SAS Award Watcher.</p>`;
@@ -79,7 +82,10 @@ export async function sendTripEmail(pairs: TripPair[]): Promise<void> {
   if (error) throw new Error(`Resend error: ${JSON.stringify(error)}`);
 }
 
-export async function sendSingleLegEmail(legs: SingleLegAlert[]): Promise<void> {
+export async function sendSingleLegEmail(
+  route: Route,
+  legs: SingleLegAlert[],
+): Promise<void> {
   if (legs.length === 0) return;
 
   const apiKey = process.env.RESEND_API_KEY;
@@ -95,7 +101,7 @@ export async function sendSingleLegEmail(legs: SingleLegAlert[]): Promise<void> 
   const resend = new Resend(apiKey);
 
   const subject =
-    `${ROUTE.outbound.from}↔${ROUTE.outbound.to}: ` +
+    `${route.outbound.from}↔${route.outbound.to}: ` +
     `${legs.length} new one-way award date${legs.length === 1 ? '' : 's'} available`;
 
   const byDirection = new Map<LegDirection, SingleLegAlert[]>();
@@ -114,10 +120,10 @@ export async function sendSingleLegEmail(legs: SingleLegAlert[]): Promise<void> 
       const items = byDirection
         .get(direction)!
         .sort((a, b) => a.date.localeCompare(b.date));
-      const route = directionRoute(direction);
+      const dirRoute = directionRoute(route, direction);
       const lis = items
         .map((leg) => {
-          const link = oneWayBookingLink(direction, leg.date);
+          const link = oneWayBookingLink(route, direction, leg.date);
           return (
             `<li><a href="${link}">${humanDate(leg.date)}</a> — ` +
             `${leg.price.toLocaleString()} pts</li>`
@@ -126,7 +132,7 @@ export async function sendSingleLegEmail(legs: SingleLegAlert[]): Promise<void> 
         .join('');
       return (
         `<p style="margin:16px 0 4px"><strong>` +
-        `${route.from} → ${route.to}</strong></p>` +
+        `${dirRoute.from} → ${dirRoute.to}</strong></p>` +
         `<ul style="margin:0">${lis}</ul>`
       );
     })
@@ -134,7 +140,7 @@ export async function sendSingleLegEmail(legs: SingleLegAlert[]): Promise<void> 
 
   const html =
     `<p>New Eurobonus standard-award one-way dates for ` +
-    `<strong>${ROUTE.outbound.from} ↔ ${ROUTE.outbound.to}</strong>:</p>` +
+    `<strong>${route.outbound.from} ↔ ${route.outbound.to}</strong>:</p>` +
     blocks +
     `<p style="color:#888;font-size:12px;margin-top:24px">Sent by your SAS Award Watcher.</p>`;
 
@@ -143,11 +149,11 @@ export async function sendSingleLegEmail(legs: SingleLegAlert[]): Promise<void> 
       const items = byDirection
         .get(direction)!
         .sort((a, b) => a.date.localeCompare(b.date));
-      const route = directionRoute(direction);
+      const dirRoute = directionRoute(route, direction);
       const dates = items
         .map((leg) => `${humanDate(leg.date)} (${leg.price.toLocaleString()} pts)`)
         .join(', ');
-      return `${route.from} → ${route.to}: ${dates}`;
+      return `${dirRoute.from} → ${dirRoute.to}: ${dates}`;
     })
     .join('\n');
 
@@ -161,28 +167,35 @@ export async function sendSingleLegEmail(legs: SingleLegAlert[]): Promise<void> 
   if (error) throw new Error(`Resend error: ${JSON.stringify(error)}`);
 }
 
-function directionRoute(direction: LegDirection): { from: string; to: string } {
-  return direction === 'outbound' ? ROUTE.outbound : ROUTE.inbound;
+function directionRoute(
+  route: Route,
+  direction: LegDirection,
+): { from: string; to: string } {
+  return direction === 'outbound' ? route.outbound : route.inbound;
 }
 
 function humanDate(yyyymmdd: string): string {
   return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
 }
 
-function bookingLink(outYmd: string, retYmd: string): string {
+function bookingLink(route: Route, outYmd: string, retYmd: string): string {
   return (
     `https://www.sas.no/book/flights?` +
-    `from=${ROUTE.outbound.from}&to=${ROUTE.outbound.to}` +
+    `from=${route.outbound.from}&to=${route.outbound.to}` +
     `&outDate=${humanDate(outYmd)}&retDate=${humanDate(retYmd)}` +
     `&pax=adults-1&flow=points`
   );
 }
 
-function oneWayBookingLink(direction: LegDirection, ymd: string): string {
-  const route = directionRoute(direction);
+function oneWayBookingLink(
+  route: Route,
+  direction: LegDirection,
+  ymd: string,
+): string {
+  const dirRoute = directionRoute(route, direction);
   return (
     `https://www.sas.no/book/flights?` +
-    `from=${route.from}&to=${route.to}` +
+    `from=${dirRoute.from}&to=${dirRoute.to}` +
     `&outDate=${humanDate(ymd)}` +
     `&pax=adults-1&flow=points`
   );
