@@ -32,7 +32,7 @@ If `npm install` fails with `Cannot find module '@tailwindcss/oxide-...'`, nativ
 
 ## Architecture
 
-This watcher tracks **bookable round-trip pairs** — not single dates — between SVG and Seoul. A "trip pair" is a (outbound, inbound) date combination where both legs are 30k-pt standard awards and the stay in Seoul is between `MIN_STAY_DAYS` and `MAX_STAY_DAYS`.
+This watcher tracks **bookable round-trip pairs** — not single dates — between SVG and Seoul. A "trip pair" is a (outbound, inbound) date combination where both legs price at or under `MAX_POINTS` (45k) and the stay in Seoul is between `MIN_STAY_DAYS` and `MAX_STAY_DAYS`.
 
 ### Why GitHub Actions (not Vercel)
 
@@ -83,11 +83,11 @@ SAS response (verified against real API):
 ### Detection logic
 
 A pair triggers an alert iff:
-- `outbound[outDate].isStandardAward === true && totalPrice <= MAX_POINTS`
-- `inbound[retDate].isStandardAward === true && totalPrice <= MAX_POINTS`
+- `outbound[outDate].totalPrice <= MAX_POINTS`
+- `inbound[retDate].totalPrice <= MAX_POINTS`
 - `MIN_STAY_DAYS ≤ daysBetween(outDate, retDate) ≤ MAX_STAY_DAYS`
 
-The boolean is the SAS-authoritative marker; the price guard protects against schema drift.
+Detection is price-only (`MAX_POINTS = 45000`). `isStandardAward` is still parsed and stored (and shown by `scripts/debug.ts`) but no longer gates detection.
 
 ### Configuration boundaries
 

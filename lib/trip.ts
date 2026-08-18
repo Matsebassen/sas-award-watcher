@@ -23,7 +23,7 @@ export function findValidSingleLegs(
   opts: { maxPoints: number },
 ): string[] {
   return Object.entries(calendar)
-    .filter(([, day]) => day.isStandardAward && day.totalPrice <= opts.maxPoints)
+    .filter(([, day]) => day.totalPrice <= opts.maxPoints)
     .map(([date]) => date)
     .sort();
 }
@@ -35,10 +35,10 @@ export function findValidPairs(
 ): TripPair[] {
   const pairs: TripPair[] = [];
   const outQualifying = Object.entries(outbound)
-    .filter(([, day]) => day.isStandardAward && day.totalPrice <= opts.maxPoints)
+    .filter(([, day]) => day.totalPrice <= opts.maxPoints)
     .sort(([a], [b]) => a.localeCompare(b));
   const inQualifying = Object.entries(inbound)
-    .filter(([, day]) => day.isStandardAward && day.totalPrice <= opts.maxPoints)
+    .filter(([, day]) => day.totalPrice <= opts.maxPoints)
     .sort(([a], [b]) => a.localeCompare(b));
 
   for (const [outDate, out] of outQualifying) {

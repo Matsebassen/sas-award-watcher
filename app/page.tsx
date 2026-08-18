@@ -149,7 +149,7 @@ function MonthGrid({
     const key = `${month}${String(day).padStart(2, '0')}`;
     const entry = calendar[key];
     let cls = 'bg-zinc-100 text-zinc-400';
-    if (entry?.isStandardAward && entry.totalPrice <= MAX_POINTS) {
+    if (entry && entry.totalPrice <= MAX_POINTS) {
       cls = 'bg-emerald-200 text-emerald-900';
     } else if (entry) {
       cls = 'bg-amber-50 text-amber-900';

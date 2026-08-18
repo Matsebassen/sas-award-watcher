@@ -15,7 +15,7 @@ export type Route = {
   inboundDates?: string[];
 };
 
-export const MAX_POINTS = 30000;
+export const MAX_POINTS = 45000;
 
 // Parse a comma-separated YYYYMM env var, falling back to a default list.
 // GitHub Actions sets an unset `vars.X` to "" (not undefined), so a blank value
