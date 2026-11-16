@@ -22,7 +22,9 @@ export default async function LoginPage({
             role="alert"
             className="rounded-lg bg-orange-100 px-4 py-3 text-sm text-orange-900"
           >
-            This account does not have access.
+            {params.error === 'AccessDenied'
+              ? 'This account does not have access.'
+              : 'Sign-in failed because of a setup problem, not your account.'}
           </div>
         )}
 
