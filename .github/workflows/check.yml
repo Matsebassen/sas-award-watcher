@@ -6,6 +6,11 @@ on:
     - cron: '37 * * * *'
   workflow_dispatch: {}
 
+# `actions: write` is only for the keepalive step below.
+permissions:
+  contents: read
+  actions: write
+
 concurrency:
   group: sas-check
   cancel-in-progress: false
@@ -39,15 +44,23 @@ jobs:
       WATCH_MONTHS: ${{ vars.WATCH_MONTHS }}
       MIN_STAY_DAYS: ${{ vars.MIN_STAY_DAYS }}
       MAX_STAY_DAYS: ${{ vars.MAX_STAY_DAYS }}
-      # SVG↔BCN (Barcelona) route:
-      BCN_WATCH_MONTHS: ${{ vars.BCN_WATCH_MONTHS }}
-      BCN_MIN_STAY_DAYS: ${{ vars.BCN_MIN_STAY_DAYS }}
-      BCN_MAX_STAY_DAYS: ${{ vars.BCN_MAX_STAY_DAYS }}
-      BCN_OUTBOUND_DATES: ${{ vars.BCN_OUTBOUND_DATES }}
-      BCN_INBOUND_DATES: ${{ vars.BCN_INBOUND_DATES }}
+      # SVG↔OPO (Porto) route:
+      OPO_WATCH_MONTHS: ${{ vars.OPO_WATCH_MONTHS }}
+      OPO_MIN_STAY_DAYS: ${{ vars.OPO_MIN_STAY_DAYS }}
+      OPO_MAX_STAY_DAYS: ${{ vars.OPO_MAX_STAY_DAYS }}
+      OPO_MAX_POINTS: ${{ vars.OPO_MAX_POINTS }}
 
     steps:
       - uses: actions/checkout@v4
+
+      # GitHub disables scheduled workflows after 60 days without commits.
+      # Re-enabling through the API resets that clock, so the check keeps
+      # itself alive. Never fails the run.
+      - name: Keep workflow enabled
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/check.yml/enable"
 
       - uses: actions/setup-node@v4
         with:

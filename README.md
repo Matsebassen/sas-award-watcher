@@ -1,6 +1,6 @@
 # SAS Award Watcher
 
-A small project that polls SAS's Eurobonus calendar API every hour via a real headless Chromium and emails you the moment a **bookable round-trip** between SVG and Seoul opens at 30k pts each way — both legs available, with 14–30 day stay in Seoul.
+A small project that polls SAS's Eurobonus calendar API every hour via a real headless Chromium and emails you the moment a **bookable round-trip** opens on one of the watched routes — both legs at or under the points cap, with a stay inside the route's window. Routes right now: SVG ↔ Seoul (March–April 2027) and SVG ↔ Porto (October 2027).
 
 ## How it works
 
@@ -50,6 +50,7 @@ To override defaults from `lib/config.ts`, add **Repository Variables** (same pa
 - `WATCH_MONTHS` — comma-separated YYYYMM, e.g. `202703,202704,202705`
 - `MIN_STAY_DAYS` (default `14`)
 - `MAX_STAY_DAYS` (default `30`)
+- Porto: `OPO_WATCH_MONTHS` (default `202710`), `OPO_MIN_STAY_DAYS` (`3`), `OPO_MAX_STAY_DAYS` (`10`), `OPO_MAX_POINTS` (`45000`)
 
 Then trigger the `Hourly SAS award check` workflow once via the **Actions** tab → **Run workflow**.
 
@@ -57,13 +58,9 @@ Then trigger the `Hourly SAS award check` workflow once via the **Actions** tab 
 
 Import the repo on Vercel; set `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, and the same `WATCH_MONTHS` / `MIN_STAY_DAYS` / `MAX_STAY_DAYS` (so the dashboard renders the right window).
 
-## Adjusting the watch window
+## Adding or changing trips
 
-Currently set to **March 2027 → April 2027** travel (with May for late-April returns). To **add October 2027** once that schedule opens (~Nov 2026), update `WATCH_MONTHS`:
-
-```
-WATCH_MONTHS=202703,202704,202705,202710,202711,202712
-```
+Each trip is a `Route` in `lib/config.ts`. Add one to `ROUTES` and the watcher, the emails and the dashboard (one tab per route) pick it up. Remove a route when the trip is in the past.
 
 The defaults live in `lib/config.ts` and can be overridden via env at any layer (`.env.local` for dev, GH Variables for the workflow, Vercel env for the dashboard).
 

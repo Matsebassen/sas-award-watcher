@@ -83,24 +83,8 @@ export async function runCheck(
     inbound: mergedIn,
   };
 
-  // Restrict detection to a route's exact-date allow-lists when present (the
-  // full month is still persisted above for the dashboard). Undefined = no
-  // restriction. A missing allowed date is simply absent — not an error.
-  const restrict = (
-    cal: CalendarMap,
-    allow: string[] | undefined,
-  ): CalendarMap => {
-    if (!allow) return cal;
-    const set = new Set(allow);
-    return Object.fromEntries(
-      Object.entries(cal).filter(([date]) => set.has(date)),
-    );
-  };
-  const detectOut = restrict(mergedOut, route.outboundDates);
-  const detectIn = restrict(mergedIn, route.inboundDates);
-
   const pairs = route.watchPairs
-    ? findValidPairs(detectOut, detectIn, {
+    ? findValidPairs(mergedOut, mergedIn, {
         maxPoints: route.maxPoints,
         minStayDays: route.minStayDays,
         maxStayDays: route.maxStayDays,
@@ -136,10 +120,10 @@ export async function runCheck(
   let newSingleLegs: SingleLegAlert[] = [];
   let rearmSingleKeys: string[] = [];
   if (route.watchSingles) {
-    const outSingles = findValidSingleLegs(detectOut, {
+    const outSingles = findValidSingleLegs(mergedOut, {
       maxPoints: route.maxPoints,
     });
-    const inSingles = findValidSingleLegs(detectIn, {
+    const inSingles = findValidSingleLegs(mergedIn, {
       maxPoints: route.maxPoints,
     });
     const currentSingleKeys = new Set<string>([

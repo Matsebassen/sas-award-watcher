@@ -9,7 +9,7 @@ const UA =
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  // Optional leading --route=SVG-BCN selects which route's airports to probe.
+  // Optional leading --route=SVG-OPO selects which route's airports to probe.
   const routeArg = args.find((a) => a.startsWith('--route='));
   const routeKey = routeArg?.slice('--route='.length) ?? DEFAULT_ROUTE.key;
   const route = ROUTES.find((r) => r.key === routeKey);
@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const months = args.filter((a) => !a.startsWith('--'));
   if (months.length === 0) {
     console.error(
-      'Usage: tsx scripts/debug.ts [--route=SVG-BCN] YYYYMM [YYYYMM ...]',
+      'Usage: tsx scripts/debug.ts [--route=SVG-OPO] YYYYMM [YYYYMM ...]',
     );
     process.exit(1);
   }

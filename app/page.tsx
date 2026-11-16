@@ -1,40 +1,76 @@
+import Link from 'next/link';
 import {
   getDirectionalSnapshot,
   getAlerts,
   getMeta,
 } from '@/lib/storage';
-import { DEFAULT_ROUTE } from '@/lib/config';
+import { DEFAULT_ROUTE, ROUTES, type Route } from '@/lib/config';
 import type { CalendarMap, DirectionalSnapshot } from '@/lib/sas';
 import { findValidPairs } from '@/lib/trip';
 
 export const dynamic = 'force-dynamic';
 
-const ROUTE = DEFAULT_ROUTE;
-const { maxPoints: MAX_POINTS, minStayDays: MIN_STAY_DAYS, maxStayDays: MAX_STAY_DAYS, watchMonths: WATCH_MONTHS } = ROUTE;
+const EMPTY: DirectionalSnapshot = { outbound: {}, inbound: {} };
 
-export default async function Page() {
-  const [snapshot, alerts, meta] = await Promise.all([
-    getDirectionalSnapshot(ROUTE.key).catch(
-      () => ({ outbound: {}, inbound: {} }) as DirectionalSnapshot,
+function pairsFor(route: Route, snapshot: DirectionalSnapshot) {
+  return findValidPairs(snapshot.outbound, snapshot.inbound, {
+    maxPoints: route.maxPoints,
+    minStayDays: route.minStayDays,
+    maxStayDays: route.maxStayDays,
+  });
+}
+
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const requested = (await searchParams).route;
+  const route = ROUTES.find((r) => r.key === requested) ?? DEFAULT_ROUTE;
+
+  // Snapshots for every route (the tabs show each trip count); alert history
+  // and meta only for the selected one.
+  const [snapshots, alerts, meta] = await Promise.all([
+    Promise.all(
+      ROUTES.map((r) => getDirectionalSnapshot(r.key).catch(() => EMPTY)),
     ),
-    getAlerts(ROUTE.key).catch(() => []),
-    getMeta(ROUTE.key).catch(() => null),
+    getAlerts(route.key).catch(() => []),
+    getMeta(route.key).catch(() => null),
   ]);
 
-  const pairs = findValidPairs(snapshot.outbound, snapshot.inbound, {
-    maxPoints: MAX_POINTS,
-    minStayDays: MIN_STAY_DAYS,
-    maxStayDays: MAX_STAY_DAYS,
-  });
+  const snapshot = snapshots[ROUTES.indexOf(route)];
+  const pairs = pairsFor(route, snapshot);
 
   return (
-    <main className="mx-auto max-w-5xl p-6 font-sans">
+    <main className="mx-auto max-w-5xl p-4 sm:p-6 font-sans">
       <header className="border-b border-zinc-200 pb-4">
         <h1 className="text-2xl font-semibold">SAS Award Watcher</h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          Watching <strong>{ROUTE.outbound.from} ↔ {ROUTE.outbound.to}</strong>{' '}
-          for round-trips at ≤ {MAX_POINTS.toLocaleString()} pts each way, with{' '}
-          {MIN_STAY_DAYS}–{MAX_STAY_DAYS} day stay.
+        <nav className="mt-3 flex flex-wrap gap-2">
+          {ROUTES.map((r, i) => {
+            const active = r.key === route.key;
+            return (
+              <Link
+                key={r.key}
+                href={`/?route=${r.key}`}
+                aria-current={active ? 'page' : undefined}
+                className={`rounded-full border px-3 py-1 text-sm ${
+                  active
+                    ? 'border-zinc-900 bg-zinc-900 text-white'
+                    : 'border-zinc-300 text-zinc-700 hover:bg-zinc-100'
+                }`}
+              >
+                {r.name}{' '}
+                <span className={active ? 'text-zinc-300' : 'text-zinc-400'}>
+                  {pairsFor(r, snapshots[i]).length}
+                </span>
+              </Link>
+            );
+          })}
+        </nav>
+        <p className="mt-3 text-sm text-zinc-500">
+          Watching <strong>{route.outbound.from} ↔ {route.outbound.to}</strong>{' '}
+          for round-trips at ≤ {route.maxPoints.toLocaleString()} pts each way,
+          with {route.minStayDays}–{route.maxStayDays} day stay.
         </p>
         <p className="mt-1 text-sm">
           Last checked:{' '}
@@ -72,14 +108,16 @@ export default async function Page() {
 
       <section className="mt-10 grid grid-cols-1 lg:grid-cols-2 gap-8">
         <DirectionBlock
-          label={`Outbound (${ROUTE.outbound.from} → ${ROUTE.outbound.to})`}
-          months={WATCH_MONTHS}
+          label={`Outbound (${route.outbound.from} → ${route.outbound.to})`}
+          months={route.watchMonths}
           calendar={snapshot.outbound}
+          maxPoints={route.maxPoints}
         />
         <DirectionBlock
-          label={`Inbound (${ROUTE.inbound.from} → ${ROUTE.inbound.to})`}
-          months={WATCH_MONTHS}
+          label={`Inbound (${route.inbound.from} → ${route.inbound.to})`}
+          months={route.watchMonths}
           calendar={snapshot.inbound}
+          maxPoints={route.maxPoints}
         />
       </section>
 
@@ -100,9 +138,10 @@ export default async function Page() {
       </section>
 
       <footer className="mt-10 text-xs text-zinc-400">
-        Watching {WATCH_MONTHS.length} months: {WATCH_MONTHS.join(', ')}.
-        Configure via env <code>WATCH_MONTHS</code>,{' '}
-        <code>MIN_STAY_DAYS</code>, <code>MAX_STAY_DAYS</code>.
+        Watching {route.watchMonths.length} month
+        {route.watchMonths.length === 1 ? '' : 's'}:{' '}
+        {route.watchMonths.join(', ')}. Routes are set up in{' '}
+        <code>lib/config.ts</code>.
       </footer>
     </main>
   );
@@ -112,17 +151,24 @@ function DirectionBlock({
   label,
   months,
   calendar,
+  maxPoints,
 }: {
   label: string;
   months: string[];
   calendar: CalendarMap;
+  maxPoints: number;
 }) {
   return (
     <div>
       <h3 className="text-base font-semibold mb-2">{label}</h3>
       <div className="space-y-4">
         {months.map((m) => (
-          <MonthGrid key={m} month={m} calendar={calendar} />
+          <MonthGrid
+            key={m}
+            month={m}
+            calendar={calendar}
+            maxPoints={maxPoints}
+          />
         ))}
       </div>
     </div>
@@ -132,9 +178,11 @@ function DirectionBlock({
 function MonthGrid({
   month,
   calendar,
+  maxPoints,
 }: {
   month: string;
   calendar: CalendarMap;
+  maxPoints: number;
 }) {
   const year = Number.parseInt(month.slice(0, 4), 10);
   const m = Number.parseInt(month.slice(4, 6), 10);
@@ -149,7 +197,7 @@ function MonthGrid({
     const key = `${month}${String(day).padStart(2, '0')}`;
     const entry = calendar[key];
     let cls = 'bg-zinc-100 text-zinc-400';
-    if (entry && entry.totalPrice <= MAX_POINTS) {
+    if (entry && entry.totalPrice <= maxPoints) {
       cls = 'bg-emerald-200 text-emerald-900';
     } else if (entry) {
       cls = 'bg-amber-50 text-amber-900';
