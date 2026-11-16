@@ -178,7 +178,7 @@ function humanDate(yyyymmdd: string): string {
   return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
 }
 
-function bookingLink(route: Route, outYmd: string, retYmd: string): string {
+export function bookingLink(route: Route, outYmd: string, retYmd: string): string {
   return (
     `https://www.sas.no/book/flights?` +
     `from=${route.outbound.from}&to=${route.outbound.to}` +
