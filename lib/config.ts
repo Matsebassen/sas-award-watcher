@@ -52,7 +52,8 @@ const OPO: Route = {
   name: 'Porto',
   outbound: { from: 'SVG', to: 'OPO' },
   inbound: { from: 'OPO', to: 'SVG' },
-  maxPoints: parseIntEnv(process.env.OPO_MAX_POINTS, MAX_POINTS),
+  // Within Europe a standard award is about 15k each way (seen: 14,480).
+  maxPoints: parseIntEnv(process.env.OPO_MAX_POINTS, 15000),
   minStayDays: parseIntEnv(process.env.OPO_MIN_STAY_DAYS, 3),
   maxStayDays: parseIntEnv(process.env.OPO_MAX_STAY_DAYS, 10),
   watchMonths: parseMonths(process.env.OPO_WATCH_MONTHS, '202710'),

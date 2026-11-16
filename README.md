@@ -50,7 +50,7 @@ To override defaults from `lib/config.ts`, add **Repository Variables** (same pa
 - `WATCH_MONTHS` — comma-separated YYYYMM, e.g. `202703,202704,202705`
 - `MIN_STAY_DAYS` (default `14`)
 - `MAX_STAY_DAYS` (default `30`)
-- Porto: `OPO_WATCH_MONTHS` (default `202710`), `OPO_MIN_STAY_DAYS` (`3`), `OPO_MAX_STAY_DAYS` (`10`), `OPO_MAX_POINTS` (`45000`)
+- Porto: `OPO_WATCH_MONTHS` (default `202710`), `OPO_MIN_STAY_DAYS` (`3`), `OPO_MAX_STAY_DAYS` (`10`), `OPO_MAX_POINTS` (`15000`)
 
 Then trigger the `Hourly SAS award check` workflow once via the **Actions** tab → **Run workflow**.
 
